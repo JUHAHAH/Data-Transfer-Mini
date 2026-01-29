@@ -56,45 +56,34 @@ class DataParserApp:
     
     def initialize(self):
         """Initialize all components."""
-        try:
-            # Load configuration
-            logger.info("Loading configuration...")
-            self.config = Config(self.config_path)
-            
-            # Initialize database
-            logger.info("Connecting to database...")
-            self.database = Database(self.config.database)
-            if not self.database.test_connection():
-                raise DatabaseError("Database connection test failed")
-            
-            # Initialize state manager
-            logger.info("Initializing state manager...")
-            table_name = self.config.database['table']
-            self.state_manager = StateManager()
-            
-            # Initialize parser
-            logger.info("Initializing parser...")
-            self.parser = DataParser(
-                parsing_rules=self.config.parsing_rules,
-                branch_rules=self.config.branch_rules,
-                output_format=self.config.output_format
-            )
-            
-            # Initialize action executor
-            logger.info("Initializing action executor...")
-            self.action_executor = ActionExecutor(self.config.actions)
-            
-            logger.info("Initialization complete!")
-            
-        except ConfigError as e:
-            logger.error(f"Configuration error: {e}")
-            sys.exit(1)
-        except DatabaseError as e:
-            logger.error(f"Database error: {e}")
-            sys.exit(1)
-        except Exception as e:
-            logger.error(f"Initialization error: {e}", exc_info=True)
-            sys.exit(1)
+        # Load configuration
+        logger.info("Loading configuration...")
+        self.config = Config(self.config_path)
+        
+        # Initialize database
+        logger.info("Connecting to database...")
+        self.database = Database(self.config.database)
+        if not self.database.test_connection():
+            raise DatabaseError("Database connection test failed")
+        
+        # Initialize state manager
+        logger.info("Initializing state manager...")
+        table_name = self.config.database['table']
+        self.state_manager = StateManager()
+        
+        # Initialize parser
+        logger.info("Initializing parser...")
+        self.parser = DataParser(
+            parsing_rules=self.config.parsing_rules,
+            branch_rules=self.config.branch_rules,
+            output_format=self.config.output_format
+        )
+        
+        # Initialize action executor
+        logger.info("Initializing action executor...")
+        self.action_executor = ActionExecutor(self.config.actions)
+        
+        logger.info("Initialization complete!")
     
     def process_new_rows(self):
         """Process new rows from database."""
@@ -151,23 +140,7 @@ class DataParserApp:
     def run(self):
         """Run the main application loop."""
         self.initialize()
-        
-        if not self.config or not self.database:
-            logger.error("Failed to initialize application")
-            return
-        
-        interval_seconds = self.config.interval_seconds
-        
-        logger.info(f"Starting data parser (check interval: {interval_seconds} seconds)")
-        logger.info(f"Monitoring table: {self.config.database['table']}")
-        
-        # Schedule the processing job
-        schedule.every(interval_seconds).seconds.do(self.process_new_rows)
-        
-        # Process immediately on startup
-        self.process_new_rows()
-        
-        self.running = True
+        self.start_monitoring()
         
         # Main loop
         try:
@@ -181,12 +154,87 @@ class DataParserApp:
             logger.info("Shutting down...")
             self.shutdown()
     
+    def run_monitoring_loop(self):
+        """Run the monitoring loop (for use in threads)."""
+        while self.running:
+            schedule.run_pending()
+            time.sleep(1)  # Check every second for scheduled tasks
+    
     def shutdown(self):
         """Cleanup and shutdown."""
         if self.database:
             # Database connections are managed by pool and will close automatically
             pass
         logger.info("Shutdown complete")
+    
+    def start_monitoring(self):
+        """Start monitoring in a thread-safe way."""
+        if self.running:
+            logger.warning("Monitoring is already running")
+            return
+        
+        if not self.config or not self.database:
+            raise RuntimeError("Application not initialized. Call initialize() first.")
+        
+        interval_seconds = self.config.interval_seconds
+        
+        logger.info(f"Starting data parser (check interval: {interval_seconds} seconds)")
+        logger.info(f"Monitoring table: {self.config.database['table']}")
+        
+        # Clear existing schedule
+        schedule.clear()
+        
+        # Schedule the processing job
+        schedule.every(interval_seconds).seconds.do(self.process_new_rows)
+        
+        # Process immediately on startup
+        self.process_new_rows()
+        
+        self.running = True
+    
+    def stop_monitoring(self):
+        """Stop monitoring gracefully."""
+        if not self.running:
+            logger.warning("Monitoring is not running")
+            return
+        
+        logger.info("Stopping monitoring...")
+        self.running = False
+        schedule.clear()
+        logger.info("Monitoring stopped")
+    
+    def get_status(self) -> dict:
+        """Get current status information."""
+        status = {
+            'running': self.running,
+            'initialized': self.config is not None and self.database is not None,
+        }
+        
+        if self.config:
+            status['interval'] = self.config.interval_seconds
+            status['table'] = self.config.database.get('table', 'N/A')
+        
+        if self.state_manager and self.config:
+            table_name = self.config.database.get('table')
+            status['last_processed_id'] = self.state_manager.get_last_processed_id(table_name)
+        else:
+            status['last_processed_id'] = None
+        
+        return status
+    
+    def set_interval(self, interval_seconds: float):
+        """Update check interval dynamically."""
+        if not isinstance(interval_seconds, (int, float)) or interval_seconds <= 0:
+            raise ValueError("interval_seconds must be a positive number")
+        
+        if self.config:
+            self.config.update_interval(interval_seconds)
+        
+        # If monitoring is running, reschedule
+        if self.running:
+            schedule.clear()
+            schedule.every(interval_seconds).seconds.do(self.process_new_rows)
+            logger.info(f"Interval updated to {interval_seconds} seconds")
 
 
 def main():
@@ -200,11 +248,42 @@ def main():
         default='config.json',
         help='Path to configuration file (default: config.json)'
     )
+    parser.add_argument(
+        '--gui',
+        action='store_true',
+        help='Launch GUI interface'
+    )
     
     args = parser.parse_args()
     
-    app = DataParserApp(config_path=args.config)
-    app.run()
+    # Check if GUI mode requested
+    if args.gui or (len(sys.argv) == 1 and sys.platform != 'linux'):
+        # Launch GUI
+        try:
+            from gui_main import main as gui_main
+            gui_main(config_path=args.config)
+        except ImportError as e:
+            logger.error(f"GUI module not found. Install PySide6: pip install PySide6")
+            logger.error(f"Import error details: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Failed to launch GUI: {e}", exc_info=True)
+            sys.exit(1)
+    else:
+        # CLI mode
+        app = DataParserApp(config_path=args.config)
+        try:
+            app.initialize()
+            app.run()
+        except ConfigError as e:
+            logger.error(f"Configuration error: {e}")
+            sys.exit(1)
+        except DatabaseError as e:
+            logger.error(f"Database error: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Initialization error: {e}", exc_info=True)
+            sys.exit(1)
 
 
 if __name__ == '__main__':
