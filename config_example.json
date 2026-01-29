@@ -1,0 +1,66 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "username",
+    "password": "password",
+    "database": "dbname",
+    "table": "tablename",
+    "id_column": "id"
+  },
+  "interval_seconds": 60,
+  "parsing_rules": [
+    {
+      "column": "price",
+      "type": "decimal",
+      "precision": 2
+    },
+    {
+      "column": "name",
+      "type": "string",
+      "format": "{value}"
+    },
+    {
+      "column": "created_at",
+      "type": "date",
+      "input_format": "%Y-%m-%d %H:%M:%S",
+      "output_format": "%Y/%m/%d %H:%M"
+    },
+    {
+      "column": "status",
+      "type": "string",
+      "format": "{:>10}"
+    }
+  ],
+  "branch_rules": [
+    {
+      "column": "category",
+      "value": "A",
+      "folder": "category_a"
+    }
+  ],
+  "actions": [
+    {
+      "type": "file",
+      "path": "output/data.txt",
+      "format": "structured",
+      "structure": {
+        "columns": ["name", "price"],
+        "separator": ","
+      }
+    },
+    {
+      "type": "file",
+      "path": "output/custom.txt",
+      "format": "custom",
+      "structure": {
+        "template": "{name}|{price}|{created_at}",
+        "separator": "|"
+      }
+    }
+  ],
+  "output_format": {
+    "structure": "custom",
+    "template": "{name},{price}"
+  }
+}

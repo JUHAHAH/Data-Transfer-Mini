@@ -1,0 +1,40 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "*yuscon8806",
+    "database": "test",
+    "table": "testtable",
+    "id_column": "id"
+  },
+  "interval_seconds": 30,
+  "parsing_rules": [
+    {
+      "column": "Column1",
+      "type": "string",
+      "format": "{value}"
+    },
+    {
+      "column": "Column2",
+      "type": "decimal",
+      "precision": 2
+    }
+  ],
+  "branch_rules": [],
+  "actions": [
+    {
+      "type": "file",
+      "path": "output/data.txt",
+      "format": "structured",
+      "structure": {
+        "columns": ["Column1", "Column2"],
+        "separator": ","
+      }
+    }
+  ],
+  "output_format": {
+    "structure": "custom",
+    "template": "{Column1},{Column2}"
+  }
+}
