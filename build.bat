@@ -11,20 +11,7 @@ if not exist "build" mkdir build
 
 REM Build executable
 echo Running PyInstaller...
-python -m PyInstaller --name="MySQLDataParser" ^
-    --onefile ^
-    --console ^
-    --add-data "config.json;." ^
-    --hidden-import=mysql.connector ^
-    --hidden-import=schedule ^
-    --hidden-import=requests ^
-    --hidden-import=dotenv ^
-    --hidden-import=ftplib ^
-    --hidden-import=ssl ^
-    --hidden-import=mysql.connector.pooling ^
-    --hidden-import=mysql.connector.cursor ^
-    --collect-all mysql.connector ^
-    main.py
+python -m PyInstaller MySQLDataParser.spec
 
 if %ERRORLEVEL% EQU 0 (
     echo.

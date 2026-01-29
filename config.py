@@ -2,6 +2,7 @@
 Configuration module for loading and validating JSON configuration.
 """
 import json
+import logging
 import os
 import sys
 from typing import Dict, Any, List, Optional
@@ -9,6 +10,8 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file if it exists
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def get_resource_path(relative_path: str) -> str:
@@ -36,6 +39,50 @@ class ConfigError(Exception):
     pass
 
 
+def _get_default_config() -> Dict[str, Any]:
+    """
+    Get default configuration template.
+    
+    Returns:
+        Default configuration dictionary
+    """
+    return {
+        "database": {
+            "host": "localhost",
+            "port": 3306,
+            "user": "username",
+            "password": "password",
+            "database": "dbname",
+            "table": "tablename",
+            "id_column": "id"
+        },
+        "interval_seconds": 60,
+        "parsing_rules": [
+            {
+                "column": "column_a",
+                "type": "decimal",
+                "precision": 2
+            }
+        ],
+        "branch_rules": [],
+        "actions": [
+            {
+                "type": "file",
+                "path": "output/data.txt",
+                "format": "structured",
+                "structure": {
+                    "columns": ["column_a"],
+                    "separator": ","
+                }
+            }
+        ],
+        "output_format": {
+            "structure": "custom",
+            "template": "{column_a}"
+        }
+    }
+
+
 class Config:
     """Configuration loader and validator."""
     
@@ -50,46 +97,84 @@ class Config:
         self._config: Dict[str, Any] = {}
         self.load()
     
+    def _create_default_config(self, config_path: str):
+        """
+        Create a default configuration file if it doesn't exist.
+        
+        Args:
+            config_path: Path where to create the default config file
+        """
+        try:
+            # Ensure directory exists
+            config_dir = os.path.dirname(config_path)
+            if config_dir and not os.path.exists(config_dir):
+                os.makedirs(config_dir, exist_ok=True)
+            
+            # Try to load template from config_template.json if it exists
+            default_config = None
+            
+            # First, try to find config_template.json in the same directory as the executable
+            if getattr(sys, 'frozen', False):
+                template_path = os.path.join(os.path.dirname(sys.executable), "config_template.json")
+            else:
+                template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_template.json")
+            
+            if os.path.exists(template_path):
+                try:
+                    with open(template_path, 'r', encoding='utf-8') as f:
+                        default_config = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Could not load config_template.json: {e}. Using built-in default.")
+            
+            # If template not found, use built-in default
+            if default_config is None:
+                default_config = _get_default_config()
+            
+            # Write default config to the target location
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(default_config, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Created default configuration file at: {config_path}")
+            logger.info("Please edit the configuration file with your settings before running the application.")
+            
+        except Exception as e:
+            raise ConfigError(f"Failed to create default configuration file at {config_path}: {e}")
+    
     def load(self):
         """Load and validate configuration from file."""
-        # Try to find config file in multiple locations (priority order)
-        config_locations = []
-        
-        # 1. Same directory as executable (for standalone builds)
+        # Determine the primary config location (executable directory for built programs)
         if getattr(sys, 'frozen', False):
-            # Running as compiled executable
-            config_locations.append(os.path.join(os.path.dirname(sys.executable), self.config_path))
+            # Running as compiled executable - use executable's directory
+            primary_config_dir = os.path.dirname(sys.executable)
+            primary_config_path = os.path.join(primary_config_dir, self.config_path)
         else:
-            # Running as script
-            config_locations.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), self.config_path))
+            # Running as script - use script's directory
+            primary_config_dir = os.path.dirname(os.path.abspath(__file__))
+            primary_config_path = os.path.join(primary_config_dir, self.config_path)
         
-        # 2. Current working directory
-        config_locations.append(os.path.join(os.getcwd(), self.config_path))
-        
-        # 3. Original path (if absolute)
-        if os.path.isabs(self.config_path):
-            config_locations.insert(0, self.config_path)
+        # If config doesn't exist in primary location, create default one
+        if not os.path.exists(primary_config_path):
+            if getattr(sys, 'frozen', False):
+                # For built executables, create default config.json in executable directory
+                self._create_default_config(primary_config_path)
+            else:
+                # For development, try to find config in other locations
+                config_locations = [
+                    os.path.join(os.getcwd(), self.config_path),
+                    self.config_path if os.path.isabs(self.config_path) else None
+                ]
+                config_found = None
+                for location in config_locations:
+                    if location and os.path.exists(location):
+                        config_found = location
+                        break
+                
+                if not config_found:
+                    raise ConfigError(f"Configuration file not found: {self.config_path}. Searched in: {', '.join([loc for loc in config_locations if loc])}")
+                
+                self.config_path = config_found
         else:
-            config_locations.append(self.config_path)
-        
-        # 4. PyInstaller resource path (if bundled)
-        try:
-            resource_path = get_resource_path(self.config_path)
-            if resource_path not in config_locations:
-                config_locations.append(resource_path)
-        except:
-            pass
-        
-        config_found = None
-        for location in config_locations:
-            if location and os.path.exists(location):
-                config_found = location
-                break
-        
-        if not config_found:
-            raise ConfigError(f"Configuration file not found: {self.config_path}. Searched in: {', '.join([loc for loc in config_locations if loc])}")
-        
-        self.config_path = config_found
+            self.config_path = primary_config_path
         
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
