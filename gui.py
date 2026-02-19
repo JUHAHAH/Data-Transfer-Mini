@@ -7,7 +7,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
-    QPushButton, QLabel, QLineEdit, QSpinBox, QTextEdit, QListWidget,
+    QPushButton, QLabel, QLineEdit, QSpinBox, QTextEdit, QPlainTextEdit, QListWidget,
     QListWidgetItem, QGroupBox, QFormLayout, QMessageBox, QDialog,
     QDialogButtonBox, QCheckBox, QComboBox, QScrollArea, QSplitter
 )
@@ -176,6 +176,12 @@ class ProgramRunTab(QWidget):
         self.app = app
         if app and app.config:
             self.interval_spinbox.setValue(int(app.config.interval_seconds))
+
+    def set_config(self, config: Optional[Config]):
+        """Set config reference for persisting interval when app not yet started."""
+        self._config = config
+        if config:
+            self.interval_spinbox.setValue(int(config.interval_seconds))
     
     def start_monitoring(self):
         """Start monitoring."""
@@ -229,12 +235,16 @@ class ProgramRunTab(QWidget):
     
     def on_interval_changed(self, value: int):
         """Handle interval change."""
-        if self.app and self.app.running:
-            try:
+        try:
+            config = getattr(self, '_config', None) or (self.app.config if self.app else None)
+            if self.app and self.app.running:
                 self.app.set_interval(float(value))
                 self.log_console.append_log(f"Interval updated to {value} seconds", "INFO")
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Failed to update interval: {e}")
+            if config:
+                config.update_interval(float(value))
+                config.save()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to update interval: {e}")
     
     def on_status_update(self, status: dict):
         """Handle status update from monitoring thread."""
@@ -316,6 +326,11 @@ class DBConfigTab(QWidget):
         self.id_column_input.setPlaceholderText("id")
         form_layout.addRow("ID Column:", self.id_column_input)
         
+        self.query_input = QPlainTextEdit()
+        self.query_input.setPlaceholderText("Optional: custom SQL (e.g. JOIN). Use exactly one %s for cursor. Leave empty to use table + ID column.")
+        self.query_input.setMaximumHeight(100)
+        form_layout.addRow("Custom query (optional):", self.query_input)
+        
         form_group.setLayout(form_layout)
         layout.addWidget(form_group)
         
@@ -361,6 +376,7 @@ class DBConfigTab(QWidget):
             self.database_input.setText(db_config.get('database', ''))
             self.table_input.setText(db_config.get('table', ''))
             self.id_column_input.setText(db_config.get('id_column', ''))
+            self.query_input.setPlainText(db_config.get('query', '') or '')
     
     def test_connection(self):
         """Test database connection."""
@@ -396,6 +412,7 @@ class DBConfigTab(QWidget):
             return
         
         try:
+            query_val = self.query_input.toPlainText().strip() or None
             self.config.update_database_config(
                 host=self.host_input.text() or 'localhost',
                 port=self.port_input.value(),
@@ -403,7 +420,8 @@ class DBConfigTab(QWidget):
                 password=self.password_input.text() or 'password',
                 database=self.database_input.text() or 'dbname',
                 table=self.table_input.text() or 'tablename',
-                id_column=self.id_column_input.text() or 'id'
+                id_column=self.id_column_input.text() or 'id',
+                query=query_val
             )
             self.config.save()
             QMessageBox.information(self, "Success", "Configuration saved successfully!")
@@ -814,6 +832,18 @@ class ParseTransferTab(QWidget):
         """Initialize UI components."""
         layout = QVBoxLayout()
         
+        # Interval and save row at top
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(QLabel("Check interval (seconds):"))
+        self.interval_spinbox = QSpinBox()
+        self.interval_spinbox.setMinimum(1)
+        self.interval_spinbox.setMaximum(86400)
+        self.interval_spinbox.setValue(60)
+        self.interval_spinbox.setToolTip("How often to check for new rows")
+        top_layout.addWidget(self.interval_spinbox)
+        top_layout.addStretch()
+        layout.addLayout(top_layout)
+        
         # Splitter for side-by-side layout
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
@@ -913,6 +943,8 @@ class ParseTransferTab(QWidget):
     def set_config(self, config: Config):
         """Load configuration into UI."""
         self.config = config
+        if config:
+            self.interval_spinbox.setValue(int(config.interval_seconds))
         self.refresh_lists()
     
     def refresh_lists(self):
@@ -1183,6 +1215,7 @@ class ParseTransferTab(QWidget):
             return
         
         try:
+            self.config.update_interval(float(self.interval_spinbox.value()))
             self.config.save()
             QMessageBox.information(self, "Success", "Configuration saved successfully!")
             # Emit signal to notify main window
@@ -1233,6 +1266,7 @@ class MainWindow(QMainWindow):
         self.parse_tab.config_saved.connect(self.reload_config)
         self.tabs.addTab(self.parse_tab, "Parse/Transfer")
         
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
         
         # Apply stylesheet
@@ -1300,6 +1334,7 @@ class MainWindow(QMainWindow):
             # Update tabs with config
             self.db_tab.set_config(self.config)
             self.parse_tab.set_config(self.config)
+            self.program_tab.set_config(self.config)
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load configuration: {e}")
@@ -1307,6 +1342,11 @@ class MainWindow(QMainWindow):
     def reload_config(self):
         """Reload configuration from file."""
         self.load_config()
+    
+    def on_tab_changed(self, index: int):
+        """Sync interval display when switching to Parse/Transfer tab."""
+        if self.config and index == 2:
+            self.parse_tab.interval_spinbox.setValue(int(self.config.interval_seconds))
     
     def closeEvent(self, event):
         """Handle window close event."""

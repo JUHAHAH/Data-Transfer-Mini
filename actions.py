@@ -2,6 +2,7 @@
 Action handlers for API transmission, file operations, and FTP upload.
 """
 import os
+import re
 import json
 import requests
 import ftplib
@@ -11,6 +12,39 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import threading
 import time
+
+
+def _apply_template(template: str, data: Dict[str, Any], sanitize_for_path: bool = False) -> str:
+    """
+    Replace {column_name} placeholders in template with values from data.
+    Uses alphanumeric + underscore only for placeholder names.
+    """
+    if not template:
+        return template
+
+    def replace_placeholder(match: re.Match) -> str:
+        key = match.group(1)
+        value = str(data.get(key, ''))
+        if sanitize_for_path:
+            value = value.replace('\\', '_').replace('/', '_').replace('..', '_')
+        return value
+
+    return re.sub(r'\{(\w+)\}', replace_placeholder, template)
+
+
+def _sanitize_resolved_path(resolved: str) -> str:
+    """Reject path traversal; normalize path parts that contain '..'."""
+    parts = resolved.replace('\\', '/').split('/')
+    out = []
+    for p in parts:
+        if p == '..':
+            continue
+        if p == '.':
+            continue
+        out.append(p)
+    if not out:
+        return '.'
+    return '/'.join(out) if '/' in resolved else os.path.join(*out)
 
 
 class ActionError(Exception):
@@ -108,6 +142,9 @@ class FileActionHandler(ActionHandler):
         """
         Append data to file.
         
+        Path may contain {column_name} placeholders; each row can write to a different file
+        (e.g. output/{id}.txt). Values used in path are sanitized for safety.
+        
         Args:
             data: Parsed row data
             config: File action configuration
@@ -116,7 +153,9 @@ class FileActionHandler(ActionHandler):
         Returns:
             True if successful
         """
-        file_path = config.get('path')
+        path_template = config.get('path')
+        file_path = _apply_template(path_template, data, sanitize_for_path=True)
+        file_path = _sanitize_resolved_path(file_path)
         format_type = config.get('format', 'json')
         branch_folder = parser.get_branch_folder(data)
         
@@ -172,7 +211,7 @@ class FTPActionHandler(ActionHandler):
         port = config.get('port', 21)
         user = config.get('user')
         password = config.get('password')
-        remote_path = config.get('remote_path', '/')
+        remote_path_template = config.get('remote_path', '/')
         filename_template = config.get('filename_template', 'data_{timestamp}.txt')
         use_tls = config.get('use_tls', False)
         format_type = config.get('format', 'json')
@@ -181,9 +220,14 @@ class FTPActionHandler(ActionHandler):
         # Format data - pass action config for structured formats
         formatted_data = parser.format_output(data, format_type, config)
         
-        # Generate filename
+        # Generate filename: {timestamp} and {column_name} placeholders
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         filename = filename_template.replace('{timestamp}', timestamp)
+        filename = _apply_template(filename, data, sanitize_for_path=True)
+        
+        # Remote path may contain {column_name} placeholders
+        remote_path = _apply_template(remote_path_template, data, sanitize_for_path=True)
+        remote_path = remote_path.replace('\\', '/')
         
         # Apply branch folder to remote path if specified
         if branch_folder:

@@ -213,6 +213,14 @@ class Config:
             if key not in db_config:
                 raise ConfigError(f"Missing required database configuration key: {key}")
         
+        # Validate optional custom query (must have exactly one %s for cursor)
+        custom_query = db_config.get('query')
+        if custom_query is not None:
+            if not isinstance(custom_query, str) or not custom_query.strip():
+                raise ConfigError("database.query must be a non-empty string")
+            if custom_query.count('%s') != 1:
+                raise ConfigError("database.query must contain exactly one %s placeholder for the cursor value")
+        
         # Validate interval
         if not isinstance(self._config['interval_seconds'], (int, float)) or self._config['interval_seconds'] <= 0:
             raise ConfigError("interval_seconds must be a positive number")
@@ -281,3 +289,93 @@ class Config:
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by key."""
         return self._config.get(key, default)
+    
+    def save(self):
+        """Save current configuration to file."""
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self._config, f, indent=2, ensure_ascii=False)
+            logger.info(f"Configuration saved to {self.config_path}")
+        except Exception as e:
+            raise ConfigError(f"Failed to save configuration: {e}")
+    
+    def update_database_config(self, **kwargs):
+        """Update database configuration."""
+        if 'database' not in self._config:
+            self._config['database'] = {}
+        self._config['database'].update(kwargs)
+        self._validate()
+    
+    def update_interval(self, interval_seconds: float):
+        """Update check interval."""
+        if not isinstance(interval_seconds, (int, float)) or interval_seconds <= 0:
+            raise ConfigError("interval_seconds must be a positive number")
+        self._config['interval_seconds'] = interval_seconds
+    
+    def add_action(self, action: Dict[str, Any]):
+        """Add a new action."""
+        if 'type' not in action:
+            raise ConfigError("Action must have a 'type' field")
+        if action['type'] not in ['api', 'file', 'ftp']:
+            raise ConfigError(f"Unknown action type: {action['type']}")
+        self._config['actions'].append(action)
+        self._validate()
+    
+    def update_action(self, index: int, action: Dict[str, Any]):
+        """Update an existing action."""
+        if index < 0 or index >= len(self._config['actions']):
+            raise ConfigError(f"Invalid action index: {index}")
+        if 'type' not in action:
+            raise ConfigError("Action must have a 'type' field")
+        if action['type'] not in ['api', 'file', 'ftp']:
+            raise ConfigError(f"Unknown action type: {action['type']}")
+        self._config['actions'][index] = action
+        self._validate()
+    
+    def remove_action(self, index: int):
+        """Remove an action."""
+        if index < 0 or index >= len(self._config['actions']):
+            raise ConfigError(f"Invalid action index: {index}")
+        if len(self._config['actions']) <= 1:
+            raise ConfigError("Cannot remove last action. At least one action is required.")
+        del self._config['actions'][index]
+    
+    def add_parsing_rule(self, rule: Dict[str, Any]):
+        """Add a new parsing rule."""
+        if 'column' not in rule:
+            raise ConfigError("Parsing rule must have a 'column' field")
+        self._config['parsing_rules'].append(rule)
+    
+    def update_parsing_rule(self, index: int, rule: Dict[str, Any]):
+        """Update an existing parsing rule."""
+        if index < 0 or index >= len(self._config['parsing_rules']):
+            raise ConfigError(f"Invalid parsing rule index: {index}")
+        if 'column' not in rule:
+            raise ConfigError("Parsing rule must have a 'column' field")
+        self._config['parsing_rules'][index] = rule
+    
+    def remove_parsing_rule(self, index: int):
+        """Remove a parsing rule."""
+        if index < 0 or index >= len(self._config['parsing_rules']):
+            raise ConfigError(f"Invalid parsing rule index: {index}")
+        del self._config['parsing_rules'][index]
+    
+    def add_branch_rule(self, rule: Dict[str, Any]):
+        """Add a new branch rule."""
+        if 'column' not in rule or 'value' not in rule or 'folder' not in rule:
+            raise ConfigError("Branch rule must have 'column', 'value', and 'folder' fields")
+        self._config['branch_rules'].append(rule)
+    
+    def update_branch_rule(self, index: int, rule: Dict[str, Any]):
+        """Update an existing branch rule."""
+        if index < 0 or index >= len(self._config['branch_rules']):
+            raise ConfigError(f"Invalid branch rule index: {index}")
+        if 'column' not in rule or 'value' not in rule or 'folder' not in rule:
+            raise ConfigError("Branch rule must have 'column', 'value', and 'folder' fields")
+        self._config['branch_rules'][index] = rule
+    
+    def remove_branch_rule(self, index: int):
+        """Remove a branch rule."""
+        if index < 0 or index >= len(self._config['branch_rules']):
+            raise ConfigError(f"Invalid branch rule index: {index}")
+        del self._config['branch_rules'][index]

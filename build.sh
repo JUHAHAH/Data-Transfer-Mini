@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e  # Exit on error
+# Change to script directory (project root)
+cd "$(dirname "$0")"
 echo "Building standalone executable..."
+echo "Current directory: $(pwd)"
 echo
 
 # Use the full path to Python to avoid WindowsApps stub issues in Git Bash

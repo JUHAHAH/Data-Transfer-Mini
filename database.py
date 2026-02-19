@@ -82,10 +82,13 @@ class Database:
         """
         Query for new rows since last processed ID.
         
+        Uses database.query if set (e.g. for JOINs); otherwise uses single-table query.
+        For custom query, the single %s placeholder receives the cursor (last_processed_id or 0).
+        
         Args:
-            table_name: Name of the table to query
-            id_column: Name of the ID column
-            last_processed_id: Last processed ID (None to get all rows)
+            table_name: Name of the table to query (used when no custom query)
+            id_column: Name of the ID/cursor column in the result
+            last_processed_id: Last processed ID (None: use 0 for custom query, or first 1000 rows for table)
         
         Returns:
             List of dictionaries representing rows
@@ -97,12 +100,17 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            if last_processed_id is not None:
-                query = f"SELECT * FROM `{table_name}` WHERE `{id_column}` > %s ORDER BY `{id_column}` ASC"
-                cursor.execute(query, (last_processed_id,))
+            custom_query = self.config.get('query')
+            if custom_query:
+                cursor_value = last_processed_id if last_processed_id is not None else 0
+                cursor.execute(custom_query, (cursor_value,))
             else:
-                query = f"SELECT * FROM `{table_name}` ORDER BY `{id_column}` ASC LIMIT 1000"
-                cursor.execute(query)
+                if last_processed_id is not None:
+                    query = f"SELECT * FROM `{table_name}` WHERE `{id_column}` > %s ORDER BY `{id_column}` ASC"
+                    cursor.execute(query, (last_processed_id,))
+                else:
+                    query = f"SELECT * FROM `{table_name}` ORDER BY `{id_column}` ASC LIMIT 1000"
+                    cursor.execute(query)
             
             rows = cursor.fetchall()
             return rows
