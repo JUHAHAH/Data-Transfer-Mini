@@ -252,9 +252,12 @@ class ProgramRunTab(QWidget):
             self.last_id_label.setText(f"Last Processed ID: {status['last_processed_id']}")
     
     def on_error(self, error_msg: str):
-        """Handle error from monitoring thread."""
+        """Handle error from monitoring thread: stop monitoring and add error to log."""
         self.log_console.append_log(f"Error: {error_msg}", "ERROR")
-        QMessageBox.critical(self, "Monitoring Error", error_msg)
+        self.log_console.append_log("Monitoring stopped due to error.", "ERROR")
+        # Stop monitoring so UI shows Stopped and user can restart
+        self.stop_monitoring()
+        QMessageBox.critical(self, "Monitoring Error", f"Monitoring stopped due to error.\n\n{error_msg}")
     
     def update_status(self):
         """Update status display."""

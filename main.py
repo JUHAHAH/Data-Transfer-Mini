@@ -8,11 +8,26 @@ import logging
 from typing import Optional
 import schedule
 
-from config import Config, ConfigError
-from database import Database, DatabaseError
-from state import StateManager
-from parser import DataParser
-from actions import ActionExecutor
+def _pause_on_error():
+    """Pause console on Windows to allow viewing error messages."""
+    if sys.platform == 'win32':
+        try:
+            input("\nPress Enter to exit...")
+        except:
+            import time
+            time.sleep(5)  # Fallback: wait 5 seconds
+
+try:
+    from config import Config, ConfigError
+    from database import Database, DatabaseError
+    from state import StateManager
+    from parser import DataParser
+    from actions import ActionExecutor, FTPLoginFailedException
+except ImportError as e:
+    print(f"ERROR: Failed to import required modules: {e}")
+    print("Make sure all Python files (actions.py, config.py, database.py, parser.py, state.py) are in the same directory.")
+    _pause_on_error()
+    sys.exit(1)
 
 
 # Configure logging
@@ -86,7 +101,7 @@ class DataParserApp:
         logger.info("Initialization complete!")
     
     def process_new_rows(self):
-        """Process new rows from database."""
+        """Process new rows from database. On any error, stops monitoring and re-raises."""
         try:
             table_name = self.config.database['table']
             id_column = self.config.database['id_column']
@@ -123,19 +138,34 @@ class DataParserApp:
                     if current_id and (max_id is None or current_id > max_id):
                         max_id = current_id
                 
+                except FTPLoginFailedException as e:
+                    logger.error(f"FTP login failed repeatedly: {e}")
+                    logger.error("Stopping monitoring due to FTP login failures.")
+                    self.stop_monitoring()
+                    raise
                 except Exception as e:
                     logger.error(f"Error processing row {row.get(id_column)}: {e}", exc_info=True)
-                    # Continue processing other rows
+                    logger.error("Stopping monitoring due to error.")
+                    self.stop_monitoring()
+                    raise
             
             # Update state with last processed ID
             if max_id > (last_id or 0):
                 self.state_manager.set_last_processed_id(max_id, table_name)
                 logger.info(f"Updated last processed ID to: {max_id}")
         
+        except FTPLoginFailedException:
+            raise  # Already logged and stop_monitoring() called in per-row handler
         except DatabaseError as e:
             logger.error(f"Database error during processing: {e}")
+            logger.error("Stopping monitoring due to error.")
+            self.stop_monitoring()
+            raise
         except Exception as e:
             logger.error(f"Unexpected error during processing: {e}", exc_info=True)
+            logger.error("Stopping monitoring due to error.")
+            self.stop_monitoring()
+            raise
     
     def run(self):
         """Run the main application loop."""
@@ -265,9 +295,11 @@ def main():
         except ImportError as e:
             logger.error(f"GUI module not found. Install PySide6: pip install PySide6")
             logger.error(f"Import error details: {e}")
+            _pause_on_error()
             sys.exit(1)
         except Exception as e:
             logger.error(f"Failed to launch GUI: {e}", exc_info=True)
+            _pause_on_error()
             sys.exit(1)
     else:
         # CLI mode
@@ -277,14 +309,35 @@ def main():
             app.run()
         except ConfigError as e:
             logger.error(f"Configuration error: {e}")
+            _pause_on_error()
             sys.exit(1)
         except DatabaseError as e:
             logger.error(f"Database error: {e}")
+            _pause_on_error()
             sys.exit(1)
         except Exception as e:
             logger.error(f"Initialization error: {e}", exc_info=True)
+            _pause_on_error()
             sys.exit(1)
 
 
+def _pause_on_error():
+    """Pause console on Windows to allow viewing error messages."""
+    if sys.platform == 'win32':
+        try:
+            input("\nPress Enter to exit...")
+        except:
+            import time
+            time.sleep(5)  # Fallback: wait 5 seconds
+
+
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        _pause_on_error()
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        _pause_on_error()
+        sys.exit(1)

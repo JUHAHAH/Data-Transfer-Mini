@@ -4,14 +4,17 @@ Action handlers for API transmission, file operations, and FTP upload.
 import os
 import re
 import json
+import logging
 import requests
 import ftplib
-from ftplib import FTP_TLS
+from ftplib import FTP_TLS, error_perm
 import ssl
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_template(template: str, data: Dict[str, Any], sanitize_for_path: bool = False) -> str:
@@ -49,6 +52,11 @@ def _sanitize_resolved_path(resolved: str) -> str:
 
 class ActionError(Exception):
     """Raised when action execution fails."""
+    pass
+
+
+class FTPLoginFailedException(Exception):
+    """Raised when FTP login fails repeatedly and monitoring should stop."""
     pass
 
 
@@ -195,6 +203,10 @@ class FileActionHandler(ActionHandler):
 class FTPActionHandler(ActionHandler):
     """Handler for FTP upload with TLS/SSL support."""
     
+    # Class-level tracking for consecutive login failures across all instances
+    _consecutive_login_failures = 0
+    _lock = threading.Lock()
+    
     def execute(self, data: Dict[str, Any], config: Dict[str, Any], parser: Any) -> bool:
         """
         Upload data as file to FTP server.
@@ -239,37 +251,183 @@ class FTPActionHandler(ActionHandler):
             tmp_file.write(formatted_data)
             tmp_file_path = tmp_file.name
         
+        ftp = None
         try:
-            # Connect and upload
-            if use_tls:
-                ftp = FTP_TLS()
-                ftp.ssl_version = ssl.PROTOCOL_TLS
-                ftp.connect(host, port)
-                ftp.login(user, password)
-                ftp.prot_p()  # Switch to secure data connection
-            else:
-                ftp = ftplib.FTP()
-                ftp.connect(host, port)
-                ftp.login(user, password)
+            # Retry FTP connection/login up to 3 times
+            max_retries = 3
             
-            # Ensure remote directory exists
-            try:
-                ftp.cwd(remote_path)
-            except:
-                # Create directory if it doesn't exist
-                self._create_remote_directory(ftp, remote_path)
-                ftp.cwd(remote_path)
+            for attempt in range(1, max_retries + 1):
+                try:
+                    logger.info(f"FTP connection attempt {attempt}/{max_retries}: Connecting to {host}:{port} (TLS: {use_tls})")
+                    # Connect and login
+                    if use_tls:
+                        ftp = FTP_TLS()
+                        ftp.ssl_version = ssl.PROTOCOL_TLS
+                        ftp.connect(host, port)
+                        logger.debug(f"FTP TLS connected, attempting login as user: {user}")
+                        ftp.login(user, password)
+                        ftp.prot_p()  # Switch to secure data connection
+                    else:
+                        ftp = ftplib.FTP()
+                        ftp.connect(host, port, timeout=30)
+                        # Read welcome message if any
+                        try:
+                            welcome_msg = ftp.getwelcome()
+                            logger.debug(f"FTP welcome message: {welcome_msg}")
+                        except:
+                            pass
+                        logger.debug(f"FTP connected, attempting login as user: {user}")
+                        # Login first (some servers require login before setting passive mode)
+                        ftp.login(user, password)
+                        logger.debug(f"FTP login successful, setting passive mode")
+                        # Set passive mode after successful login
+                        try:
+                            ftp.set_pasv(True)  # Enable passive mode (required by many FTP servers)
+                        except Exception as pasv_err:
+                            logger.warning(f"Failed to set passive mode: {pasv_err}, continuing with active mode")
+                    
+                    logger.info(f"FTP login successful on attempt {attempt}")
+                    # Reset failure counter on successful login
+                    with FTPActionHandler._lock:
+                        FTPActionHandler._consecutive_login_failures = 0
+                    break  # Success, exit retry loop
+                
+                except error_perm as e:
+                    error_msg = str(e)
+                    logger.error(f"FTP login failed (attempt {attempt}/{max_retries}): {error_msg}")
+                    if attempt == max_retries:
+                        # Increment consecutive failure counter
+                        with FTPActionHandler._lock:
+                            FTPActionHandler._consecutive_login_failures += 1
+                            failures = FTPActionHandler._consecutive_login_failures
+                        
+                        logger.error(f"FTP login failed after {max_retries} attempts (consecutive failures: {failures}).")
+                        
+                        # After 3 consecutive failures, stop monitoring entirely
+                        if failures >= 3:
+                            logger.error("FTP login failed 3 times consecutively. Stopping monitoring.")
+                            raise FTPLoginFailedException(f"FTP login failed after {max_retries} attempts (3 consecutive failures). Monitoring stopped.")
+                        
+                        raise ActionError(f"FTP login failed after {max_retries} attempts: {error_msg}")
+                    # Close connection if it exists before retrying
+                    if ftp:
+                        try:
+                            ftp.quit()
+                        except:
+                            try:
+                                ftp.close()
+                            except:
+                                pass
+                        ftp = None
+                    time.sleep(1)  # Brief delay before retry
+                
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"FTP connection error (attempt {attempt}/{max_retries}): {error_msg}")
+                    if attempt == max_retries:
+                        logger.error(f"FTP connection failed after {max_retries} attempts. Stopping FTP upload.")
+                        raise ActionError(f"FTP connection failed after {max_retries} attempts: {error_msg}")
+                    if ftp:
+                        try:
+                            ftp.quit()
+                        except:
+                            try:
+                                ftp.close()
+                            except:
+                                pass
+                        ftp = None
+                    time.sleep(1)
             
-            # Upload file
+            if not ftp:
+                raise ActionError("Failed to establish FTP connection after all retries")
+            
+            # Ensure remote directory exists and navigate there.
+            # Many servers (e.g. vsFTPd with chroot) show "/" as root; use relative path (e.g. DATA/LH/GNSS).
+            remote_rel = remote_path.strip('/')
+            cwd_ok = False
+            for try_path in (remote_rel, remote_path):
+                if not try_path:
+                    continue
+                try:
+                    ftp.cwd(try_path)
+                    cwd_ok = True
+                    remote_path = try_path  # use working path for logs
+                    break
+                except Exception:
+                    continue
+            if not cwd_ok:
+                self._create_remote_directory(ftp, remote_rel or remote_path)
+                for try_path in (remote_rel, remote_path):
+                    if not try_path:
+                        continue
+                    try:
+                        ftp.cwd(try_path)
+                        cwd_ok = True
+                        remote_path = try_path
+                        break
+                    except Exception as e:
+                        logger.error(f"FTP: Cannot change to directory {try_path}: {e}")
+                if not cwd_ok:
+                    raise ActionError(f"FTP: Cannot access directory {remote_path}. Check path and permissions.")
+            
+            # Validate filename (553 often caused by empty or invalid name)
+            if not filename or not filename.strip() or filename.strip() in ('.', '.txt') or filename.startswith('.'):
+                filename = f"data_{timestamp}.txt"
+            elif not filename.endswith('.txt'):
+                filename = filename + '.txt'
+            
+            # Upload file: try STOR filename first (after CWD), then on 553 retry with full path
+            logger.debug(f"Uploading file {filename} to {remote_path}")
+            stored = False
             with open(tmp_file_path, 'rb') as f:
-                ftp.storbinary(f'STOR {filename}', f)
+                try:
+                    ftp.storbinary(f'STOR {filename}', f)
+                    stored = True
+                except ftplib.error_perm as e:
+                    err_msg = str(e)
+                    if '553' in err_msg or 'Could not create' in err_msg:
+                        # Try full path; some servers want path in STOR (with or without leading slash)
+                        for stor_path in (
+                            (f"{remote_path}/{filename}".replace('//', '/') if remote_path else filename),
+                            (f"/{remote_path}/{filename}".replace('//', '/') if remote_path else None),
+                        ):
+                            if stor_path is None:
+                                continue
+                            logger.debug(f"Retrying STOR with path: {stor_path}")
+                            f.seek(0)
+                            try:
+                                ftp.storbinary(f'STOR {stor_path}', f)
+                                stored = True
+                                break
+                            except ftplib.error_perm:
+                                continue
+                        if not stored:
+                            logger.error(f"FTP STOR failed (path={remote_path}, file={filename}): {err_msg}")
+                            raise ActionError(f"FTP could not create file: {err_msg}. Check path exists and user has write permission.")
+                    else:
+                        logger.error(f"FTP STOR failed (path={remote_path}, file={filename}): {err_msg}")
+                        raise ActionError(f"FTP could not create file: {err_msg}. Check path exists and user has write permission.")
             
             ftp.quit()
+            logger.info(f"Successfully uploaded file to FTP: {remote_path}/{filename}")
             print(f"Successfully uploaded file to FTP: {remote_path}/{filename}")
             return True
         
+        except ActionError:
+            # Re-raise ActionError (login failures) without wrapping
+            raise
+        
         except Exception as e:
+            logger.error(f"Failed to upload file to FTP: {e}")
             print(f"Failed to upload to FTP: {e}")
+            if ftp:
+                try:
+                    ftp.quit()
+                except:
+                    try:
+                        ftp.close()
+                    except:
+                        pass
             raise ActionError(f"FTP upload failed: {e}")
         
         finally:
@@ -280,22 +438,24 @@ class FTPActionHandler(ActionHandler):
                 pass
     
     def _create_remote_directory(self, ftp: ftplib.FTP, remote_path: str):
-        """Create remote directory structure."""
-        parts = remote_path.strip('/').split('/')
-        current_path = ''
-        
+        """Create remote directory structure (relative path, one segment at a time for chrooted servers)."""
+        path = remote_path.strip('/')
+        if not path:
+            return
+        parts = [p for p in path.split('/') if p]
         for part in parts:
-            if not part:
-                continue
-            current_path += '/' + part
             try:
-                ftp.cwd(current_path)
-            except:
+                ftp.cwd(part)
+            except Exception:
                 try:
-                    ftp.mkd(current_path)
-                    ftp.cwd(current_path)
-                except:
-                    pass
+                    ftp.mkd(part)
+                    ftp.cwd(part)
+                except ftplib.error_perm as e:
+                    logger.warning(f"FTP MKD {part} failed: {e}")
+                    try:
+                        ftp.cwd(part)
+                    except Exception:
+                        raise
 
 
 class ActionExecutor:

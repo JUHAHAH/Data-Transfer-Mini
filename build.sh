@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e  # Exit on error
 # Change to script directory (project root)
 cd "$(dirname "$0")"
 echo "Building standalone executable..."
@@ -29,7 +28,22 @@ fi
 echo "Running PyInstaller..."
 $PYTHON_CMD -m PyInstaller MySQLDataParser.spec
 
-echo
-echo "Build complete! Executable is in the 'dist' folder."
-echo "File: dist/MySQLDataParser.exe"
-echo
+BUILD_EXIT_CODE=$?
+
+if [ $BUILD_EXIT_CODE -eq 0 ]; then
+    echo
+    echo "Build complete! Executable is in the 'dist' folder."
+    if [ "$(uname -s)" = "Linux" ] || [ "$(uname -s)" = "Darwin" ]; then
+        echo "File: dist/MySQLDataParser"
+    else
+        echo "File: dist/MySQLDataParser.exe"
+    fi
+    echo
+else
+    echo
+    echo "Build failed with error code: $BUILD_EXIT_CODE"
+    echo "Check the error messages above."
+    echo
+fi
+
+exit $BUILD_EXIT_CODE
