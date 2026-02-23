@@ -207,6 +207,26 @@ class FTPActionHandler(ActionHandler):
     _consecutive_login_failures = 0
     _lock = threading.Lock()
     
+    def prepare_upload(self, data: Dict[str, Any], config: Dict[str, Any], parser: Any) -> tuple:
+        """Compute (remote_path, filename, formatted_data) for one row (no network). Used for batch upload."""
+        remote_path_template = config.get('remote_path', '/')
+        filename_template = config.get('filename_template', 'data_{timestamp}.txt')
+        format_type = config.get('format', 'json')
+        branch_folder = parser.get_branch_folder(data)
+        formatted_data = parser.format_output(data, format_type, config)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        filename = filename_template.replace('{timestamp}', timestamp)
+        filename = _apply_template(filename, data, sanitize_for_path=True)
+        remote_path = _apply_template(remote_path_template, data, sanitize_for_path=True)
+        remote_path = remote_path.replace('\\', '/')
+        if branch_folder:
+            remote_path = os.path.join(remote_path, branch_folder).replace('\\', '/')
+        if not filename or not filename.strip() or filename.strip() in ('.', '.txt') or filename.startswith('.'):
+            filename = f"data_{timestamp}.txt"
+        elif not filename.endswith('.txt'):
+            filename = filename + '.txt'
+        return (remote_path.strip('/') or remote_path, filename, formatted_data)
+    
     def execute(self, data: Dict[str, Any], config: Dict[str, Any], parser: Any) -> bool:
         """
         Upload data as file to FTP server.
@@ -245,10 +265,10 @@ class FTPActionHandler(ActionHandler):
         if branch_folder:
             remote_path = os.path.join(remote_path, branch_folder).replace('\\', '/')
         
-        # Create temporary local file
+        # Create temporary local file (one line; we append to remote file like local file action)
         import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as tmp_file:
-            tmp_file.write(formatted_data)
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8', newline='\n') as tmp_file:
+            tmp_file.write(formatted_data + '\n')
             tmp_file_path = tmp_file.name
         
         ftp = None
@@ -376,41 +396,49 @@ class FTPActionHandler(ActionHandler):
             elif not filename.endswith('.txt'):
                 filename = filename + '.txt'
             
-            # Upload file: try STOR filename first (after CWD), then on 553 retry with full path
-            logger.debug(f"Uploading file {filename} to {remote_path}")
+            # Append to remote file (APPE) so multiple rows accumulate like local file; use STOR only if APPE not supported
+            logger.debug(f"Appending to file {filename} at {remote_path}")
             stored = False
             with open(tmp_file_path, 'rb') as f:
-                try:
-                    ftp.storbinary(f'STOR {filename}', f)
-                    stored = True
-                except ftplib.error_perm as e:
-                    err_msg = str(e)
-                    if '553' in err_msg or 'Could not create' in err_msg:
-                        # Try full path; some servers want path in STOR (with or without leading slash)
-                        for stor_path in (
-                            (f"{remote_path}/{filename}".replace('//', '/') if remote_path else filename),
-                            (f"/{remote_path}/{filename}".replace('//', '/') if remote_path else None),
-                        ):
-                            if stor_path is None:
-                                continue
-                            logger.debug(f"Retrying STOR with path: {stor_path}")
-                            f.seek(0)
-                            try:
-                                ftp.storbinary(f'STOR {stor_path}', f)
-                                stored = True
+                def try_upload(cmd_prefix: str, path_arg: str) -> bool:
+                    f.seek(0)
+                    try:
+                        ftp.storbinary(f'{cmd_prefix} {path_arg}', f)
+                        return True
+                    except ftplib.error_perm:
+                        return False
+                # Prefer APPE (append): same file gets multiple lines like local file action
+                for cmd in ('APPE', 'STOR'):
+                    f.seek(0)
+                    try:
+                        ftp.storbinary(f'{cmd} {filename}', f)
+                        stored = True
+                        break
+                    except ftplib.error_perm as e:
+                        err_msg = str(e)
+                        if cmd == 'APPE' and '550' in err_msg:
+                            continue  # File doesn't exist, try STOR
+                        if '553' in err_msg or 'Could not create' in err_msg:
+                            for full_path in (
+                                (f"{remote_path}/{filename}".replace('//', '/') if remote_path else filename),
+                                (f"/{remote_path}/{filename}".replace('//', '/') if remote_path else None),
+                            ):
+                                if full_path is None:
+                                    continue
+                                if try_upload(cmd, full_path):
+                                    stored = True
+                                    break
+                            if stored:
                                 break
-                            except ftplib.error_perm:
-                                continue
                         if not stored:
-                            logger.error(f"FTP STOR failed (path={remote_path}, file={filename}): {err_msg}")
+                            logger.error(f"FTP {cmd} failed (path={remote_path}, file={filename}): {err_msg}")
                             raise ActionError(f"FTP could not create file: {err_msg}. Check path exists and user has write permission.")
-                    else:
-                        logger.error(f"FTP STOR failed (path={remote_path}, file={filename}): {err_msg}")
-                        raise ActionError(f"FTP could not create file: {err_msg}. Check path exists and user has write permission.")
-            
+                        break
+            if not stored:
+                raise ActionError("FTP could not create or append to file. Check path and permissions.")
             ftp.quit()
-            logger.info(f"Successfully uploaded file to FTP: {remote_path}/{filename}")
-            print(f"Successfully uploaded file to FTP: {remote_path}/{filename}")
+            logger.info(f"Successfully appended to FTP file: {remote_path}/{filename}")
+            print(f"Successfully appended to FTP file: {remote_path}/{filename}")
             return True
         
         except ActionError:
@@ -436,6 +464,107 @@ class FTPActionHandler(ActionHandler):
                 os.unlink(tmp_file_path)
             except:
                 pass
+    
+    def upload_batch(self, config: Dict[str, Any], remote_path: str, filename: str, lines: List[str]) -> None:
+        """Upload multiple lines to one remote file in one connection (one APPE/STOR)."""
+        from io import BytesIO
+        content = ('\n'.join(lines) + '\n').encode('utf-8')
+        blob = BytesIO(content)
+        host = config.get('host')
+        port = int(config.get('port', 21))
+        user = config.get('user')
+        password = config.get('password')
+        use_tls = config.get('use_tls', False)
+        remote_path = (remote_path or '').strip('/')
+        ftp = None
+        try:
+            if use_tls:
+                ftp = FTP_TLS()
+                ftp.ssl_version = ssl.PROTOCOL_TLS
+                ftp.connect(host, port)
+                ftp.login(user, password)
+                ftp.prot_p()
+            else:
+                ftp = ftplib.FTP()
+                ftp.connect(host, port, timeout=30)
+                ftp.login(user, password)
+                try:
+                    ftp.set_pasv(True)
+                except Exception:
+                    pass
+            with FTPActionHandler._lock:
+                FTPActionHandler._consecutive_login_failures = 0
+            remote_rel = remote_path.strip('/')
+            cwd_ok = False
+            for try_path in (remote_rel, remote_path):
+                if not try_path:
+                    continue
+                try:
+                    ftp.cwd(try_path)
+                    cwd_ok = True
+                    remote_path = try_path
+                    break
+                except Exception:
+                    continue
+            if not cwd_ok:
+                self._create_remote_directory(ftp, remote_rel or remote_path)
+                for try_path in (remote_rel, remote_path):
+                    if not try_path:
+                        continue
+                    try:
+                        ftp.cwd(try_path)
+                        cwd_ok = True
+                        remote_path = try_path
+                        break
+                    except Exception as e:
+                        logger.error(f"FTP: Cannot change to directory {try_path}: {e}")
+                if not cwd_ok:
+                    raise ActionError(f"FTP: Cannot access directory {remote_path}. Check path and permissions.")
+            stored = False
+            for cmd in ('APPE', 'STOR'):
+                blob.seek(0)
+                try:
+                    ftp.storbinary(f'{cmd} {filename}', blob)
+                    stored = True
+                    break
+                except ftplib.error_perm as e:
+                    err_msg = str(e)
+                    if cmd == 'APPE' and '550' in err_msg:
+                        continue
+                    if '553' in err_msg or 'Could not create' in err_msg:
+                        for full_path in (
+                            (f"{remote_path}/{filename}".replace('//', '/') if remote_path else filename),
+                            (f"/{remote_path}/{filename}".replace('//', '/') if remote_path else None),
+                        ):
+                            if full_path is None:
+                                continue
+                            blob.seek(0)
+                            try:
+                                ftp.storbinary(f'{cmd} {full_path}', blob)
+                                stored = True
+                                break
+                            except ftplib.error_perm:
+                                pass
+                    if not stored:
+                        raise ActionError(f"FTP could not create file: {err_msg}. Check path and permissions.")
+                    break
+            if not stored:
+                raise ActionError("FTP could not create or append to file.")
+            ftp.quit()
+            logger.info(f"Successfully uploaded batch to FTP: {remote_path}/{filename} ({len(lines)} lines)")
+        except ActionError:
+            raise
+        except Exception as e:
+            logger.error(f"FTP batch upload failed: {e}")
+            if ftp:
+                try:
+                    ftp.quit()
+                except Exception:
+                    try:
+                        ftp.close()
+                    except Exception:
+                        pass
+            raise ActionError(f"FTP batch upload failed: {e}")
     
     def _create_remote_directory(self, ftp: ftplib.FTP, remote_path: str):
         """Create remote directory structure (relative path, one segment at a time for chrooted servers)."""
@@ -474,21 +603,38 @@ class ActionExecutor:
             'file': FileActionHandler(),
             'ftp': FTPActionHandler()
         }
+        # FTP batch: when active, FTP actions buffer instead of uploading per row
+        self._ftp_batch: Optional[Dict[int, Dict[tuple, List[str]]]] = None  # action_ix -> (path, filename) -> lines
+    
+    def start_ftp_batch(self) -> None:
+        """Start buffering FTP uploads; flush with flush_ftp_buffers()."""
+        self._ftp_batch = {}
+    
+    def flush_ftp_buffers(self) -> None:
+        """Upload all buffered FTP data (one connection per file, one APPE per file)."""
+        if not self._ftp_batch:
+            return
+        ftp_handler = self.handlers['ftp']
+        for action_ix, file_buffers in self._ftp_batch.items():
+            config = self.actions_config[action_ix]
+            for (remote_path, filename), lines in file_buffers.items():
+                if not lines:
+                    continue
+                try:
+                    ftp_handler.upload_batch(config, remote_path, filename, lines)
+                except ActionError as e:
+                    print(f"FTP batch upload failed: {e}")
+                    raise
+        self._ftp_batch = None
     
     def execute_actions(self, data: Dict[str, Any], parser: Any) -> List[bool]:
         """
         Execute all configured actions for a data row.
-        
-        Args:
-            data: Parsed row data
-            parser: DataParser instance
-        
-        Returns:
-            List of success flags for each action
+        When FTP batch is active, FTP actions buffer; other actions run immediately.
         """
         results = []
         
-        for action_config in self.actions_config:
+        for action_ix, action_config in enumerate(self.actions_config):
             action_type = action_config.get('type')
             handler = self.handlers.get(action_type)
             
@@ -498,8 +644,19 @@ class ActionExecutor:
                 continue
             
             try:
-                success = handler.execute(data, action_config, parser)
-                results.append(success)
+                if action_type == 'ftp' and self._ftp_batch is not None:
+                    # Buffer for batch upload
+                    remote_path, filename, formatted_data = handler.prepare_upload(data, action_config, parser)
+                    key = (remote_path, filename)
+                    if action_ix not in self._ftp_batch:
+                        self._ftp_batch[action_ix] = {}
+                    if key not in self._ftp_batch[action_ix]:
+                        self._ftp_batch[action_ix][key] = []
+                    self._ftp_batch[action_ix][key].append(formatted_data)
+                    results.append(True)
+                else:
+                    success = handler.execute(data, action_config, parser)
+                    results.append(success)
             except ActionError as e:
                 print(f"Action execution failed: {e}")
                 results.append(False)

@@ -119,6 +119,9 @@ class DataParserApp:
             
             logger.info(f"Found {len(rows)} new row(s)")
             
+            # Buffer FTP by file so we upload once per file (one connection, one APPE) instead of per row
+            self.action_executor.start_ftp_batch()
+            
             # Process each row
             max_id = last_id if last_id else 0
             for row in rows:
@@ -126,7 +129,7 @@ class DataParserApp:
                     # Parse row
                     parsed_row = self.parser.parse_row(row)
                     
-                    # Execute actions
+                    # Execute actions (FTP buffered; file/api run immediately)
                     results = self.action_executor.execute_actions(parsed_row, self.parser)
                     
                     # Track success
@@ -148,6 +151,15 @@ class DataParserApp:
                     logger.error("Stopping monitoring due to error.")
                     self.stop_monitoring()
                     raise
+            
+            # Upload all buffered FTP data (one connection per file)
+            try:
+                self.action_executor.flush_ftp_buffers()
+            except Exception as e:
+                logger.error(f"FTP batch upload failed: {e}", exc_info=True)
+                logger.error("Stopping monitoring due to error.")
+                self.stop_monitoring()
+                raise
             
             # Update state with last processed ID
             if max_id > (last_id or 0):
