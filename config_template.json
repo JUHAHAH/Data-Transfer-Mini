@@ -10,16 +10,38 @@
   },
   "interval_seconds": 60,
   "parsing_rules": [
-    {"column": "column_a", "type": "decimal", "precision": 2}
+    { "column": "column_a", "type": "decimal", "precision": 2 }
   ],
   "branch_rules": [
-    {"column": "column_a", "value": "X", "folder": "folder/x"}
+    { "column": "column_a", "value": "X", "folder": "folder/x" }
   ],
   "actions": [
-    {"type": "api", "url": "https://api.example.com/endpoint", "method": "POST", "headers": {}},
-    {"type": "file", "path": "output/data.txt", "format": "json"},
-    {"type": "file", "path": "output/{id}.txt", "format": "structured", "structure": {"columns": ["column_a", "column_b"], "separator": ","}},
-    {"type": "ftp", "host": "ftp.example.com", "port": 21, "user": "ftpuser", "password": "ftppass", "use_tls": true, "remote_path": "/uploads/", "filename_template": "data_{timestamp}.txt"}
+    {
+      "type": "api",
+      "url": "https://api.example.com/endpoint",
+      "method": "POST",
+      "headers": {}
+    },
+    { "type": "file", "path": "output/data.txt", "format": "json" },
+    {
+      "type": "file",
+      "path": "output/{id}.txt",
+      "format": "structured",
+      "structure": { "columns": ["column_a", "column_b"], "separator": "," }
+    },
+    {
+      "type": "ftp",
+      "host": "ftp.example.com",
+      "port": 21,
+      "user": "ftpuser",
+      "password": "ftppass",
+      "use_tls": true,
+      "remote_path": "/uploads/",
+      "filename_template": "data_{timestamp}.txt"
+    }
   ],
-  "output_format": {"structure": "custom", "template": "{column_a}|{column_b}|{column_c}"}
+  "output_format": {
+    "structure": "custom",
+    "template": "{column_a}|{column_b}|{column_c}"
+  }
 }

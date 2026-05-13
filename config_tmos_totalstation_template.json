@@ -1,0 +1,110 @@
+{
+  "database": {
+    "host": "121.167.147.147",
+    "port": 3601,
+    "user": "yuscon",
+    "password": "*yuscon8806",
+    "database": "tmos_client",
+    "table": "tmos_total_station_measure_pt",
+    "id_column": "id",
+    "query": "SELECT mspt.id AS id, mspt.reg_date AS reg_date, area.name AS area_name, obsv.name AS point_name, COALESCE((SELECT r.n FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.n) AS base_n, COALESCE((SELECT r.e FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.e) AS base_e, COALESCE((SELECT r.z FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.z) AS base_z, mspt.h_ang AS h_ang, mspt.v_ang AS v_ang, mspt.sd AS sd, mspt.n - COALESCE((SELECT r.n FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.n) + obsv.n AS n, mspt.e - COALESCE((SELECT r.e FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.e) + obsv.e AS e, mspt.z - COALESCE((SELECT r.z FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.z) + obsv.z AS z, (mspt.n - COALESCE((SELECT r.n FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.n)) * 1000 AS d_n, (mspt.e - COALESCE((SELECT r.e FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.e)) * 1000 AS d_e, (mspt.z - COALESCE((SELECT r.z FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.z)) * 1000 AS d_z, (SQRT(POW(mspt.n - COALESCE((SELECT r.n FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.n), 2) + POW(mspt.e - COALESCE((SELECT r.e FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.e), 2) + POW(mspt.z - COALESCE((SELECT r.z FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.z), 2))) * 1000 AS variation_3d FROM tmos_total_station_measure_pt mspt LEFT JOIN tmos_total_station_observ_pt obsv ON mspt.obsv_id = obsv.id LEFT JOIN tmos_total_station_area area ON mspt.area_id = area.id LEFT JOIN tmos_total_station_job job ON area.job_id = job.id LEFT JOIN tmos_total_station_outlier_opt outlier_opt ON area.id = outlier_opt.area_id WHERE mspt.removed = 0 AND obsv.id IS NOT NULL AND mspt.id > %s AND (outlier_opt.id IS NULL OR (ABS((mspt.n - COALESCE((SELECT r.n FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.n)) * 1000) < outlier_opt.n * 1000 OR ABS((mspt.e - COALESCE((SELECT r.e FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.e)) * 1000) < outlier_opt.e * 1000 OR ABS((mspt.z - COALESCE((SELECT r.z FROM tmos_total_station_observ_pt_ref r WHERE r.obsv_id = mspt.obsv_id AND r.reg_date < mspt.reg_date ORDER BY r.reg_date DESC LIMIT 1), obsv.z)) * 1000) < outlier_opt.z * 1000)) ORDER BY mspt.id ASC LIMIT 1000"
+  },
+  "interval_seconds": 120.0,
+  "monitoring_restart_on_error": true,
+  "parsing_rules": [
+    {
+      "column": "reg_date",
+      "type": "date",
+      "input_format": "%Y-%m-%d %H:%M:%S",
+      "output_format": "%Y-%m-%d-%H:%M:%S"
+    },
+    {
+      "column": "area_name",
+      "type": "string"
+    },
+    {
+      "column": "point_name",
+      "type": "string"
+    },
+    {
+      "column": "base_n",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "base_e",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "base_z",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "h_ang",
+      "type": "decimal"
+    },
+    {
+      "column": "v_ang",
+      "type": "decimal"
+    },
+    {
+      "column": "sd",
+      "type": "decimal"
+    },
+    {
+      "column": "n",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "e",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "z",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "d_n",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "d_e",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "d_z",
+      "type": "decimal",
+      "precision": 4
+    },
+    {
+      "column": "variation_3d",
+      "type": "decimal",
+      "precision": 4
+    }
+  ],
+  "branch_rules": [],
+  "actions": [
+    {
+      "type": "ftp",
+      "host": "106.242.126.14",
+      "port": 21,
+      "user": "smartairis",
+      "password": "0210",
+      "remote_path": "/DATA/LH/TS/SIDO",
+      "use_tls": false,
+      "filename_template": "{point_name}.txt",
+      "format": "structured"
+    }
+  ],
+  "output_format": {
+    "structure": "custom",
+    "template": "{reg_date},{area_name},{point_name},{base_n},{base_e},{base_z},{h_ang},{v_ang},{sd},{n},{e},{z},{d_n},{d_e},{d_z},{variation_3d}"
+  }
+}

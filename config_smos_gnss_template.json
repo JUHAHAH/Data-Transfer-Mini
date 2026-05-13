@@ -1,0 +1,106 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 3601,
+    "user": "yuscon",
+    "password": "*yuscon8806",
+    "database": "smos_client",
+    "table": "smos_module_gnss_data",
+    "id_column": "id",
+    "query": "SELECT d.id, d.platform_id, d.time, d.name, d.obs_fixed_percentage, d.d_plane_x, d.d_plane_y, d.d_plane_h, d.d_variation_plane_x, d.d_variation_plane_y, d.d_variation_plane_h, dev.host_number, dev.lon, dev.lat, dev.alt, SQRT(d.d_variation_plane_x * d.d_variation_plane_x + d.d_variation_plane_y * d.d_variation_plane_y + d.d_variation_plane_h * d.d_variation_plane_h) AS variation_3d FROM smos_module_gnss_data d LEFT JOIN smos_module_gnss_device dev ON d.name = dev.name AND d.platform_id = dev.platform_id WHERE d.id > %s AND d.statistics_type = 0 ORDER BY d.id ASC LIMIT 1000"
+  },
+  "interval_seconds": 120.0,
+  "monitoring_restart_on_error": true,
+  "parsing_rules": [
+    {
+      "column": "time",
+      "type": "date",
+      "input_format": "%Y-%m-%d %H:%M:%S",
+      "output_format": "%Y-%m-%d-%H:%M:%S"
+    },
+    {
+      "column": "obs_fixed_percentage",
+      "type": "decimal",
+      "precision": 1
+    },
+    {
+      "column": "lon",
+      "type": "decimal",
+      "precision": 10
+    },
+    {
+      "column": "lat",
+      "type": "decimal",
+      "precision": 10
+    },
+    {
+      "column": "alt",
+      "type": "decimal",
+      "precision": 6
+    },
+    {
+      "column": "d_plane_x",
+      "type": "decimal",
+      "precision": 6
+    },
+    {
+      "column": "d_plane_y",
+      "type": "decimal",
+      "precision": 6
+    },
+    {
+      "column": "d_plane_h",
+      "type": "decimal",
+      "precision": 5
+    },
+    {
+      "column": "d_variation_plane_x",
+      "type": "decimal",
+      "precision": 2
+    },
+    {
+      "column": "d_variation_plane_y",
+      "type": "decimal",
+      "precision": 2
+    },
+    {
+      "column": "d_variation_plane_h",
+      "type": "decimal",
+      "precision": 2
+    },
+    {
+      "column": "variation_3d",
+      "type": "decimal",
+      "precision": 2
+    }
+  ],
+  "branch_rules": [],
+  "actions": [
+    {
+      "type": "ftp",
+      "host": "106.242.126.14",
+      "port": 21,
+      "user": "smartairis",
+      "password": "0210",
+      "remote_path": "/DATA/LH/GNSS",
+      "use_tls": false,
+      "filename_template": "{host_number}.txt",
+      "format": "structured"
+    },
+    {
+      "type": "api",
+      "url": "http://114.203.209.90:9803/api/data/notify-observations-updated",
+      "method": "POST",
+      "headers": {
+        "companyId": 1,
+        "mode": "gnss"
+      },
+      "timeout": 10,
+      "max_retries": 1
+    }
+  ],
+  "output_format": {
+    "structure": "custom",
+    "template": "{time},{platform_id},{host_number},{obs_fixed_percentage},{lon},{lat},{alt},{d_plane_x},{d_plane_y},{d_plane_h},{d_variation_plane_x},{d_variation_plane_y},{d_variation_plane_h},{variation_3d}"
+  }
+}
