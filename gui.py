@@ -113,6 +113,10 @@ class ProgramRunTab(QWidget):
         self.monitoring_thread: Optional[MonitoringThread] = None
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status)
+        self._restart_timer = QTimer(self)
+        self._restart_timer.setSingleShot(True)
+        self._restart_timer.timeout.connect(self._restart_monitoring_after_error)
+        self._restart_error_series = 0
         self.init_ui()
     
     def init_ui(self):
@@ -210,13 +214,25 @@ class ProgramRunTab(QWidget):
             self.status_timer.start(1000)  # Update every second
             
             self.log_console.append_log("Monitoring started", "INFO")
+            self._restart_error_series = 0
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start monitoring: {e}")
             self.log_console.append_log(f"Error starting monitoring: {e}", "ERROR")
     
+    def _active_config(self) -> Optional[Config]:
+        return getattr(self, '_config', None) or (self.app.config if self.app else None)
+    
+    def _restart_monitoring_after_error(self):
+        """Called by timer to resume monitoring after a processing error."""
+        if not self.app:
+            return
+        self.log_console.append_log("Auto-restart: starting monitoring...", "INFO")
+        self.start_monitoring()
+    
     def stop_monitoring(self):
         """Stop monitoring."""
+        self._restart_timer.stop()
         if self.monitoring_thread:
             self.monitoring_thread.stop()
             self.monitoring_thread.wait()
@@ -252,12 +268,35 @@ class ProgramRunTab(QWidget):
             self.last_id_label.setText(f"Last Processed ID: {status['last_processed_id']}")
     
     def on_error(self, error_msg: str):
-        """Handle error from monitoring thread: stop monitoring and add error to log."""
+        """Handle error from monitoring thread: stop monitoring, log, optional auto-restart."""
         self.log_console.append_log(f"Error: {error_msg}", "ERROR")
         self.log_console.append_log("Monitoring stopped due to error.", "ERROR")
-        # Stop monitoring so UI shows Stopped and user can restart
         self.stop_monitoring()
-        QMessageBox.critical(self, "Monitoring Error", f"Monitoring stopped due to error.\n\n{error_msg}")
+        cfg = self._active_config()
+        if cfg and cfg.monitoring_restart_on_error:
+            self._restart_error_series += 1
+            max_a = cfg.monitoring_restart_max_attempts
+            if max_a > 0 and self._restart_error_series > max_a:
+                self.log_console.append_log(
+                    f"Auto-restart: gave up after {max_a} consecutive error(s).", "ERROR"
+                )
+                self._restart_error_series = 0
+                QMessageBox.critical(
+                    self, "Monitoring Error",
+                    f"Monitoring stopped due to error.\n\n{error_msg}\n\n"
+                    f"Auto-restart limit ({max_a}) reached."
+                )
+                return
+            delay_sec = cfg.monitoring_restart_delay_seconds
+            self.log_console.append_log(
+                f"Auto-restart: monitoring will start again in {delay_sec:.0f} seconds.", "WARNING"
+            )
+            self._restart_timer.start(int(max(1.0, delay_sec) * 1000))
+            return
+        QMessageBox.critical(
+            self, "Monitoring Error",
+            f"Monitoring stopped due to error.\n\n{error_msg}"
+        )
     
     def update_status(self):
         """Update status display."""

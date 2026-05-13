@@ -96,7 +96,10 @@ class DataParserApp:
         
         # Initialize action executor
         logger.info("Initializing action executor...")
-        self.action_executor = ActionExecutor(self.config.actions)
+        self.action_executor = ActionExecutor(
+            self.config.actions,
+            ftp_global_defaults=self.config.ftp_global_defaults,
+        )
         
         logger.info("Initialization complete!")
     

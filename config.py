@@ -267,6 +267,35 @@ class Config:
         return float(self._config['interval_seconds'])
     
     @property
+    def monitoring_restart_on_error(self) -> bool:
+        """If True (default), GUI will schedule monitoring restart after a fatal processing error."""
+        return bool(self._config.get('monitoring_restart_on_error', True))
+    
+    @property
+    def monitoring_restart_delay_seconds(self) -> float:
+        """Seconds to wait before auto-restarting monitoring after an error."""
+        return float(self._config.get('monitoring_restart_delay_seconds', 90))
+    
+    @property
+    def monitoring_restart_max_attempts(self) -> int:
+        """Max consecutive error-triggered restarts before giving up (0 = unlimited)."""
+        return int(self._config.get('monitoring_restart_max_attempts', 0))
+    
+    @property
+    def ftp_global_defaults(self) -> Dict[str, Any]:
+        """
+        Optional root-level keys merged into every FTP action (action-specific values win).
+        Supported: connect_timeout (seconds).
+        """
+        d: Dict[str, Any] = {}
+        if 'connect_timeout' in self._config:
+            try:
+                d['connect_timeout'] = float(self._config['connect_timeout'])
+            except (TypeError, ValueError):
+                pass
+        return d
+    
+    @property
     def parsing_rules(self) -> List[Dict[str, Any]]:
         """Get parsing rules."""
         return self._config['parsing_rules']

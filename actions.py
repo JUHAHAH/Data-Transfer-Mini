@@ -272,6 +272,7 @@ class FTPActionHandler(ActionHandler):
             tmp_file_path = tmp_file.name
         
         ftp = None
+        connect_timeout = float(config.get('connect_timeout', 60))
         try:
             # Retry FTP connection/login up to 3 times
             max_retries = 3
@@ -283,13 +284,13 @@ class FTPActionHandler(ActionHandler):
                     if use_tls:
                         ftp = FTP_TLS()
                         ftp.ssl_version = ssl.PROTOCOL_TLS
-                        ftp.connect(host, port)
+                        ftp.connect(host, port, timeout=connect_timeout)
                         logger.debug(f"FTP TLS connected, attempting login as user: {user}")
                         ftp.login(user, password)
                         ftp.prot_p()  # Switch to secure data connection
                     else:
                         ftp = ftplib.FTP()
-                        ftp.connect(host, port, timeout=30)
+                        ftp.connect(host, port, timeout=connect_timeout)
                         # Read welcome message if any
                         try:
                             welcome_msg = ftp.getwelcome()
@@ -475,18 +476,19 @@ class FTPActionHandler(ActionHandler):
         user = config.get('user')
         password = config.get('password')
         use_tls = config.get('use_tls', False)
+        connect_timeout = float(config.get('connect_timeout', 60))
         remote_path = (remote_path or '').strip('/')
         ftp = None
         try:
             if use_tls:
                 ftp = FTP_TLS()
                 ftp.ssl_version = ssl.PROTOCOL_TLS
-                ftp.connect(host, port)
+                ftp.connect(host, port, timeout=connect_timeout)
                 ftp.login(user, password)
                 ftp.prot_p()
             else:
                 ftp = ftplib.FTP()
-                ftp.connect(host, port, timeout=30)
+                ftp.connect(host, port, timeout=connect_timeout)
                 ftp.login(user, password)
                 try:
                     ftp.set_pasv(True)
@@ -590,14 +592,16 @@ class FTPActionHandler(ActionHandler):
 class ActionExecutor:
     """Executes configured actions."""
     
-    def __init__(self, actions_config: List[Dict[str, Any]]):
+    def __init__(self, actions_config: List[Dict[str, Any]], ftp_global_defaults: Optional[Dict[str, Any]] = None):
         """
         Initialize action executor.
         
         Args:
             actions_config: List of action configurations
+            ftp_global_defaults: Optional root-level FTP defaults (e.g. connect_timeout) merged into each FTP action
         """
         self.actions_config = actions_config
+        self._ftp_global_defaults = dict(ftp_global_defaults) if ftp_global_defaults else {}
         self.handlers = {
             'api': APIActionHandler(),
             'file': FileActionHandler(),
@@ -605,6 +609,11 @@ class ActionExecutor:
         }
         # FTP batch: when active, FTP actions buffer instead of uploading per row
         self._ftp_batch: Optional[Dict[int, Dict[tuple, List[str]]]] = None  # action_ix -> (path, filename) -> lines
+    
+    def _ftp_merged_config(self, action_ix: int) -> Dict[str, Any]:
+        """Merge root FTP defaults with the action entry (action wins on key conflicts)."""
+        base = self.actions_config[action_ix]
+        return {**self._ftp_global_defaults, **base}
     
     def start_ftp_batch(self) -> None:
         """Start buffering FTP uploads; flush with flush_ftp_buffers()."""
@@ -616,7 +625,7 @@ class ActionExecutor:
             return
         ftp_handler = self.handlers['ftp']
         for action_ix, file_buffers in self._ftp_batch.items():
-            config = self.actions_config[action_ix]
+            config = self._ftp_merged_config(action_ix)
             for (remote_path, filename), lines in file_buffers.items():
                 if not lines:
                     continue
@@ -646,7 +655,8 @@ class ActionExecutor:
             try:
                 if action_type == 'ftp' and self._ftp_batch is not None:
                     # Buffer for batch upload
-                    remote_path, filename, formatted_data = handler.prepare_upload(data, action_config, parser)
+                    merged = self._ftp_merged_config(action_ix)
+                    remote_path, filename, formatted_data = handler.prepare_upload(data, merged, parser)
                     key = (remote_path, filename)
                     if action_ix not in self._ftp_batch:
                         self._ftp_batch[action_ix] = {}
@@ -655,7 +665,8 @@ class ActionExecutor:
                     self._ftp_batch[action_ix][key].append(formatted_data)
                     results.append(True)
                 else:
-                    success = handler.execute(data, action_config, parser)
+                    cfg = self._ftp_merged_config(action_ix) if action_type == 'ftp' else action_config
+                    success = handler.execute(data, cfg, parser)
                     results.append(success)
             except ActionError as e:
                 print(f"Action execution failed: {e}")
